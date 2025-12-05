@@ -120,6 +120,8 @@ class UserClient:
             attempt += 1
             try:
                 channel = await self.client.get_entity(self.config.source_channel)
+                start_day = start_date.astimezone(self.config.timezone).date()
+                end_day = end_date.astimezone(self.config.timezone).date()
                 async for message in self.client.iter_messages(
                     channel, offset_date=end_date, reverse=True
                 ):
@@ -127,10 +129,11 @@ class UserClient:
                         continue
                     message_date = message.date.astimezone(self.config.timezone)
                     naive_date = message_date.replace(tzinfo=None)
+                    message_day = naive_date.date()
 
-                    if naive_date < start_date.replace(tzinfo=None):
+                    if message_day < start_day:
                         break
-                    if naive_date > end_date.replace(tzinfo=None):
+                    if message_day > end_day:
                         continue
 
                     preview = (message.message or "")[:500]

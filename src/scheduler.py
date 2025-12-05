@@ -32,7 +32,9 @@ class Scheduler:
     async def initialize(self) -> None:
         await self.database.setup()
         await self.user_client.start()
-        initialized_at = await self.database.get_config_value("initialized_at")
+        initialized_at = None
+        if hasattr(self.database, "get_config_value"):
+            initialized_at = await self.database.get_config_value("initialized_at")
         post_count = await self.database.count_posts()
         if post_count > 0:
             self.logger.info(
