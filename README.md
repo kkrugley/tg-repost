@@ -3,7 +3,7 @@
 Бот для репоста случайных публикаций из публичного канала в целевой канал. Веб-сервер реализован на FastAPI с эндпоинтами `/health` и `/trigger_repost`, вся логика репоста вынесена в `src/`.
 
 ## Стек
-- Python 3.11 (фиксируется в `runtime.txt`)
+- Python 3.11 (фиксируется в `runtime.txt`, используйте поддерживаемую Render версию — `python-3.11.8`)
 - Telethon для User API
 - python-telegram-bot для Bot API
 - asyncpg + Supabase (PostgreSQL)

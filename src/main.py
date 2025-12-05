@@ -12,7 +12,7 @@ import uvicorn
 from fastapi import FastAPI, HTTPException
 
 from .bot_client import BotClient
-from .config import Config, load_config
+from .config import Config, ConfigError, load_config
 from .database import Database
 from .scheduler import Scheduler
 from .user_client import UserClient
@@ -127,7 +127,11 @@ def create_app(
     return app
 
 
-app = create_app()
+try:
+    app = create_app()
+except ConfigError:
+    # Fallback app to allow import without env during tests; real app is created in __main__ with proper env.
+    app = FastAPI(title="Telegram Repost Bot", version="0.1.0")
 
 
 if __name__ == "__main__":
