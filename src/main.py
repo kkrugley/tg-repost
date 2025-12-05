@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sys
 from datetime import datetime, timezone
 from typing import Optional
+from contextlib import asynccontextmanager
 
+import structlog
 import uvicorn
 from fastapi import FastAPI, HTTPException
 
@@ -20,7 +23,23 @@ LOGGER_NAME = "repost.main"
 def configure_logging(level: str = "INFO") -> None:
     logging.basicConfig(
         level=getattr(logging, level.upper(), logging.INFO),
-        format="[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s",
+        format="%(message)s",
+        stream=sys.stdout,
+    )
+    structlog.configure(
+        processors=[
+            structlog.processors.TimeStamper(fmt="iso"),
+            structlog.stdlib.add_log_level,
+            structlog.stdlib.add_logger_name,
+            structlog.processors.StackInfoRenderer(),
+            structlog.processors.format_exc_info,
+            structlog.processors.dict_tracebacks,
+            structlog.processors.JSONRenderer(),
+        ],
+        wrapper_class=structlog.stdlib.BoundLogger,
+        context_class=dict,
+        logger_factory=structlog.stdlib.LoggerFactory(),
+        cache_logger_on_first_use=True,
     )
 
 
@@ -33,35 +52,51 @@ def create_app(
 ) -> FastAPI:
     config = config or load_config()
     configure_logging(config.log_level)
-    logger = logging.getLogger(LOGGER_NAME)
+    logger = structlog.get_logger(LOGGER_NAME)
 
-    database = database or Database(config.database_url, logger=logging.getLogger("repost.database"))
-    user_client = user_client or UserClient(config, database, logger=logging.getLogger("repost.user_client"))
-    bot_client = bot_client or BotClient(config.telegram_bot_token, logger=logging.getLogger("repost.bot_client"))
-    scheduler = scheduler or Scheduler(config, database, user_client, bot_client, logger=logging.getLogger("repost.scheduler"))
+    database = database or Database(
+        config.database_url,
+        logger=structlog.get_logger("repost.database"),
+        max_retries=config.max_retries,
+        retry_delay_seconds=config.retry_delay_seconds,
+    )
+    user_client = user_client or UserClient(
+        config,
+        database,
+        logger=structlog.get_logger("repost.user_client"),
+    )
+    bot_client = bot_client or BotClient(
+        config.telegram_bot_token,
+        logger=structlog.get_logger("repost.bot_client"),
+    )
+    scheduler = scheduler or Scheduler(
+        config,
+        database,
+        user_client,
+        bot_client,
+        logger=structlog.get_logger("repost.scheduler"),
+    )
 
-    app = FastAPI(title="Telegram Repost Bot", version="0.1.0")
-    repost_lock = asyncio.Lock()
-
-    @app.on_event("startup")
-    async def startup_event() -> None:
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
         try:
             await scheduler.initialize()
         except Exception as exc:  # pragma: no cover - startup issues are runtime-specific
-            logger.error("Startup failed", extra={"error": str(exc)})
+            logger.error("Startup failed", error=str(exc))
             raise
-
-    @app.on_event("shutdown")
-    async def shutdown_event() -> None:
+        yield
         await database.close()
         await bot_client.close()
         await user_client.stop()
+
+    app = FastAPI(title="Telegram Repost Bot", version="0.1.0", lifespan=lifespan)
+    repost_lock = asyncio.Lock()
 
     @app.get("/health")
     async def health() -> dict:
         try:
             metrics = await scheduler.health()
-            status = "healthy"
+            status = "ok"
         except Exception as exc:
             status = "degraded"
             metrics = {"error": str(exc)}
@@ -81,7 +116,7 @@ def create_app(
             try:
                 post = await scheduler.repost_once()
             except Exception as exc:  # pragma: no cover - depends on Telegram connectivity
-                logger.error("Repost failed", extra={"error": str(exc)})
+                logger.error("Repost failed", error=str(exc))
                 raise HTTPException(status_code=500, detail="Repost failed") from exc
 
         if not post:

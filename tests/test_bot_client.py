@@ -21,6 +21,9 @@ class FakeBot:
     async def close(self):
         self.closed = True
 
+    async def get_me(self):
+        return {"id": 1}
+
 
 @pytest.mark.asyncio
 async def test_copy_post_uses_bot(fake_config):
@@ -40,3 +43,13 @@ async def test_close_bot(fake_config):
     await client.close()
 
     assert fake_bot.closed is True
+
+
+@pytest.mark.asyncio
+async def test_status_connected(fake_config):
+    fake_bot = FakeBot()
+    client = BotClient(fake_config.telegram_bot_token, bot=fake_bot)
+
+    status = await client.status()
+
+    assert status == "connected"

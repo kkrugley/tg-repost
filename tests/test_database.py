@@ -77,3 +77,14 @@ async def test_random_unreposted_post():
 
     post = await db.get_random_unreposted_post()
     assert post["message_id"] == 10
+
+
+@pytest.mark.asyncio
+async def test_count_posts():
+    conn = FakeConnection()
+    conn.fetchval_returns.append(3)
+    db = Database("postgresql://user:pass@localhost:5432/db", pool=FakePool(conn))
+
+    total = await db.count_posts()
+
+    assert total == 3

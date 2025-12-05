@@ -20,6 +20,9 @@ class FakeDB:
     async def count_unreposted(self):
         return 1
 
+    async def count_posts(self):
+        return 0
+
     async def latest_repost_time(self):
         return None
 
@@ -38,6 +41,9 @@ class FakeUserClient:
     async def get_messages(self, channel, ids):
         return object() if self.message_exists else None
 
+    async def status(self):
+        return "connected"
+
     # Telethon compatibility
     async def stop(self):
         return None
@@ -52,6 +58,9 @@ class FakeBotClient:
 
     async def close(self):
         return None
+
+    async def status(self):
+        return "connected"
 
 
 @pytest.mark.asyncio
@@ -85,3 +94,40 @@ async def test_repost_marks_missing_message(fake_config):
 
     assert result["message_id"] == 11
     assert db.marked == [11]
+
+
+@pytest.mark.asyncio
+async def test_initialize_skips_when_posts_exist(fake_config):
+    class InitDB(FakeDB):
+        async def count_posts(self):
+            return 5
+
+    db = InitDB()
+    user = FakeUserClient()
+    scheduler = Scheduler(fake_config, db, user, FakeBotClient())
+
+    await scheduler.initialize()
+
+    # fetch_posts should not have been called; no marks
+    assert db.marked == []
+
+
+@pytest.mark.asyncio
+async def test_health_returns_iso_last_repost(fake_config):
+    class HealthDB(FakeDB):
+        async def count_unreposted(self):
+            return 2
+
+        async def latest_repost_time(self):
+            import datetime as dt
+
+            return dt.datetime(2024, 1, 1)
+
+    scheduler = Scheduler(fake_config, HealthDB(), FakeUserClient(), FakeBotClient())
+
+    health = await scheduler.health()
+
+    assert health["database"] == "connected"
+    assert health["last_repost"] == "2024-01-01T00:00:00"
+    assert health["telegram_user_api"] == "connected"
+    assert health["telegram_bot_api"] == "connected"

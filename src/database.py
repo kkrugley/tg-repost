@@ -1,10 +1,12 @@
 from __future__ import annotations
 
-import logging
+import asyncio
 from datetime import datetime
+import ssl
 from typing import Any, Dict, Optional
 
 import asyncpg
+import structlog
 
 LOGGER_NAME = "repost.database"
 
@@ -45,15 +47,43 @@ SESSION_KEY = "telethon_session"
 
 
 class Database:
-    def __init__(self, dsn: str, logger: Optional[logging.Logger] = None, pool: Optional[Any] = None):
+    def __init__(
+        self,
+        dsn: str,
+        logger: Optional[structlog.stdlib.BoundLogger] = None,
+        pool: Optional[Any] = None,
+        max_retries: int = 3,
+        retry_delay_seconds: int = 30,
+    ):
         self.dsn = dsn
         self.pool = pool
-        self.logger = logger or logging.getLogger(LOGGER_NAME)
+        self.logger = logger or structlog.get_logger(LOGGER_NAME)
+        self.max_retries = max_retries
+        self.retry_delay_seconds = retry_delay_seconds
 
     async def connect(self) -> None:
         if self.pool is None:
-            self.pool = await asyncpg.create_pool(self.dsn)
-            self.logger.info("Connected to database")
+            attempt = 0
+            while attempt < self.max_retries:
+                attempt += 1
+                ssl_ctx = ssl.create_default_context()
+                # For Supabase poolers we disable hostname check/cert verify to avoid DNS/SSL mismatches.
+                ssl_ctx.check_hostname = False
+                ssl_ctx.verify_mode = ssl.CERT_NONE
+                try:
+                    self.pool = await asyncpg.create_pool(self.dsn, ssl=ssl_ctx)
+                    self.logger.info("Connected to database")
+                    break
+                except Exception as exc:
+                    self.logger.error(
+                        "Database connection failed",
+                        error=str(exc),
+                        error_type=exc.__class__.__name__,
+                        attempt=attempt,
+                    )
+                    if attempt >= self.max_retries:
+                        raise
+                    await asyncio.sleep(self.retry_delay_seconds)
 
     async def close(self) -> None:
         if self.pool is not None:
@@ -88,7 +118,7 @@ class Database:
         """
         async with self.pool.acquire() as conn:
             await conn.execute(query, message_id, channel_id, post_date, content_preview)
-        self.logger.debug("Saved post metadata", extra={"message_id": message_id})
+        self.logger.debug("Saved post metadata", message_id=message_id)
 
     async def get_random_unreposted_post(self) -> Optional[Dict[str, Any]]:
         await self.connect()
@@ -115,11 +145,17 @@ class Database:
         """
         async with self.pool.acquire() as conn:
             await conn.execute(query, message_id, when)
-        self.logger.info("Post marked reposted", extra={"message_id": message_id})
+        self.logger.info("Post marked reposted", message_id=message_id)
 
     async def count_unreposted(self) -> int:
         await self.connect()
         query = "SELECT COUNT(*) FROM repost_posts WHERE is_reposted = FALSE;"
+        async with self.pool.acquire() as conn:
+            return int(await conn.fetchval(query))
+
+    async def count_posts(self) -> int:
+        await self.connect()
+        query = "SELECT COUNT(*) FROM repost_posts;"
         async with self.pool.acquire() as conn:
             return int(await conn.fetchval(query))
 

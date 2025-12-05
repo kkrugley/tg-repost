@@ -98,3 +98,15 @@ async def test_fetch_posts_saves_metadata(fake_config):
     assert saved == 2
     assert len(db.metadata) == 2
     assert db.sessions[-1] == b"session-string"
+
+
+@pytest.mark.asyncio
+async def test_user_status(fake_config):
+    db = StubDatabase()
+    client = FakeTelethonClient([])
+    user_client = UserClient(fake_config, db, client=client)
+
+    await user_client.start()
+    status = await user_client.status()
+
+    assert status == "connected"
