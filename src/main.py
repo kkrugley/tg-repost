@@ -81,7 +81,9 @@ def create_app(
     async def lifespan(app: FastAPI):
         try:
             await scheduler.initialize()
-        except Exception as exc:  # pragma: no cover - startup issues are runtime-specific
+        except (
+            Exception
+        ) as exc:  # pragma: no cover - startup issues are runtime-specific
             logger.error("Startup failed", error=str(exc))
             raise
         yield
@@ -115,7 +117,9 @@ def create_app(
         async with repost_lock:
             try:
                 post = await scheduler.repost_once()
-            except Exception as exc:  # pragma: no cover - depends on Telegram connectivity
+            except (
+                Exception
+            ) as exc:  # pragma: no cover - depends on Telegram connectivity
                 logger.error("Repost failed", error=str(exc))
                 raise HTTPException(status_code=500, detail="Repost failed") from exc
 

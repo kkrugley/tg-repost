@@ -65,7 +65,9 @@ class FakeBotClient:
 
 @pytest.mark.asyncio
 async def test_repost_skips_when_no_posts(fake_config):
-    scheduler = Scheduler(fake_config, FakeDB(post=None), FakeUserClient(), FakeBotClient())
+    scheduler = Scheduler(
+        fake_config, FakeDB(post=None), FakeUserClient(), FakeBotClient()
+    )
     result = await scheduler.repost_once()
     assert result is None
 
@@ -88,7 +90,9 @@ async def test_repost_copies_and_marks(fake_config):
 async def test_repost_marks_missing_message(fake_config):
     post = {"message_id": 11, "channel_id": 20, "post_date": None}
     db = FakeDB(post=post)
-    scheduler = Scheduler(fake_config, db, FakeUserClient(message_exists=False), FakeBotClient())
+    scheduler = Scheduler(
+        fake_config, db, FakeUserClient(message_exists=False), FakeBotClient()
+    )
 
     result = await scheduler.repost_once()
 

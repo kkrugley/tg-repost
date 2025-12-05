@@ -65,10 +65,14 @@ class UserClient:
                 self.connected = True
                 if not await self.client.is_user_authorized():
                     if not self.config.telegram_auth_code:
-                        raise RuntimeError("TELEGRAM_AUTH_CODE is required for initial authorization")
+                        raise RuntimeError(
+                            "TELEGRAM_AUTH_CODE is required for initial authorization"
+                        )
                     await self.client.send_code_request(self.config.telegram_phone)
                     try:
-                        await self.client.sign_in(self.config.telegram_phone, self.config.telegram_auth_code)
+                        await self.client.sign_in(
+                            self.config.telegram_phone, self.config.telegram_auth_code
+                        )
                     except SessionPasswordNeededError as exc:
                         raise RuntimeError(
                             "Two-factor authentication is enabled; provide password support or disable 2FA"
@@ -78,7 +82,9 @@ class UserClient:
                 return
             except Exception as exc:  # pragma: no cover - network/telegram errors
                 last_error = exc
-                self.logger.warning("User client connect failed", error=str(exc), attempt=attempt)
+                self.logger.warning(
+                    "User client connect failed", error=str(exc), attempt=attempt
+                )
                 if attempt >= self.config.max_retries:
                     break
                 await asyncio.sleep(self.config.retry_delay_seconds)
@@ -114,7 +120,9 @@ class UserClient:
             attempt += 1
             try:
                 channel = await self.client.get_entity(self.config.source_channel)
-                async for message in self.client.iter_messages(channel, offset_date=end_date, reverse=True):
+                async for message in self.client.iter_messages(
+                    channel, offset_date=end_date, reverse=True
+                ):
                     if not message or not getattr(message, "date", None):
                         continue
                     message_date = message.date.astimezone(self.config.timezone)
@@ -138,7 +146,9 @@ class UserClient:
                 self.logger.info("Messages fetched", count=saved)
                 return saved
             except Exception as exc:  # pragma: no cover - network/telegram errors
-                self.logger.warning("Fetch posts failed", error=str(exc), attempt=attempt)
+                self.logger.warning(
+                    "Fetch posts failed", error=str(exc), attempt=attempt
+                )
                 if attempt >= self.config.max_retries:
                     raise
                 await asyncio.sleep(self.config.retry_delay_seconds)

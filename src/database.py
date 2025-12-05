@@ -3,9 +3,10 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime
 import ssl
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, cast
 
 import asyncpg
+from asyncpg.pool import Pool
 import structlog
 
 LOGGER_NAME = "repost.database"
@@ -61,6 +62,11 @@ class Database:
         self.max_retries = max_retries
         self.retry_delay_seconds = retry_delay_seconds
 
+    def _require_pool(self) -> Pool:
+        if self.pool is None:
+            raise RuntimeError("Database pool is not initialized")
+        return cast(Pool, self.pool)
+
     async def connect(self) -> None:
         if self.pool is None:
             attempt = 0
@@ -93,7 +99,8 @@ class Database:
 
     async def setup(self) -> None:
         await self.connect()
-        async with self.pool.acquire() as conn:
+        pool = self._require_pool()
+        async with pool.acquire() as conn:
             await conn.execute(CREATE_POSTS_TABLE)
             await conn.execute(CREATE_POSTS_INDEX)
             await conn.execute(CREATE_SESSION_TABLE)
@@ -108,6 +115,7 @@ class Database:
         content_preview: Optional[str] = None,
     ) -> None:
         await self.connect()
+        pool = self._require_pool()
         query = """
         INSERT INTO repost_posts (message_id, channel_id, post_date, content_preview)
         VALUES ($1, $2, $3, $4)
@@ -116,12 +124,15 @@ class Database:
             post_date = EXCLUDED.post_date,
             content_preview = EXCLUDED.content_preview;
         """
-        async with self.pool.acquire() as conn:
-            await conn.execute(query, message_id, channel_id, post_date, content_preview)
+        async with pool.acquire() as conn:
+            await conn.execute(
+                query, message_id, channel_id, post_date, content_preview
+            )
         self.logger.debug("Saved post metadata", message_id=message_id)
 
     async def get_random_unreposted_post(self) -> Optional[Dict[str, Any]]:
         await self.connect()
+        pool = self._require_pool()
         query = """
         SELECT id, message_id, channel_id, post_date
         FROM repost_posts
@@ -129,50 +140,57 @@ class Database:
         ORDER BY random()
         LIMIT 1;
         """
-        async with self.pool.acquire() as conn:
+        async with pool.acquire() as conn:
             row = await conn.fetchrow(query)
             if row:
                 return dict(row)
         return None
 
-    async def mark_reposted(self, message_id: int, when: Optional[datetime] = None) -> None:
+    async def mark_reposted(
+        self, message_id: int, when: Optional[datetime] = None
+    ) -> None:
         await self.connect()
+        pool = self._require_pool()
         query = """
         UPDATE repost_posts
         SET is_reposted = TRUE,
             reposted_at = COALESCE($2, CURRENT_TIMESTAMP)
         WHERE message_id = $1;
         """
-        async with self.pool.acquire() as conn:
+        async with pool.acquire() as conn:
             await conn.execute(query, message_id, when)
         self.logger.info("Post marked reposted", message_id=message_id)
 
     async def count_unreposted(self) -> int:
         await self.connect()
+        pool = self._require_pool()
         query = "SELECT COUNT(*) FROM repost_posts WHERE is_reposted = FALSE;"
-        async with self.pool.acquire() as conn:
+        async with pool.acquire() as conn:
             return int(await conn.fetchval(query))
 
     async def count_posts(self) -> int:
         await self.connect()
+        pool = self._require_pool()
         query = "SELECT COUNT(*) FROM repost_posts;"
-        async with self.pool.acquire() as conn:
+        async with pool.acquire() as conn:
             return int(await conn.fetchval(query))
 
     async def latest_repost_time(self) -> Optional[datetime]:
         await self.connect()
+        pool = self._require_pool()
         query = """
         SELECT reposted_at FROM repost_posts
         WHERE reposted_at IS NOT NULL
         ORDER BY reposted_at DESC
         LIMIT 1;
         """
-        async with self.pool.acquire() as conn:
+        async with pool.acquire() as conn:
             value = await conn.fetchval(query)
             return value
 
     async def save_session_bytes(self, data: bytes) -> None:
         await self.connect()
+        pool = self._require_pool()
         query = """
         INSERT INTO repost_session (key, value, updated_at)
         VALUES ($1, $2, CURRENT_TIMESTAMP)
@@ -180,19 +198,21 @@ class Database:
         SET value = EXCLUDED.value,
             updated_at = CURRENT_TIMESTAMP;
         """
-        async with self.pool.acquire() as conn:
+        async with pool.acquire() as conn:
             await conn.execute(query, SESSION_KEY, data)
         self.logger.info("Telethon session saved")
 
     async def load_session_bytes(self) -> Optional[bytes]:
         await self.connect()
+        pool = self._require_pool()
         query = "SELECT value FROM repost_session WHERE key = $1;"
-        async with self.pool.acquire() as conn:
+        async with pool.acquire() as conn:
             value = await conn.fetchval(query, SESSION_KEY)
             return value
 
     async def set_config_value(self, key: str, value: str) -> None:
         await self.connect()
+        pool = self._require_pool()
         query = """
         INSERT INTO repost_config (key, value, updated_at)
         VALUES ($1, $2, CURRENT_TIMESTAMP)
@@ -200,12 +220,13 @@ class Database:
         SET value = EXCLUDED.value,
             updated_at = CURRENT_TIMESTAMP;
         """
-        async with self.pool.acquire() as conn:
+        async with pool.acquire() as conn:
             await conn.execute(query, key, value)
 
     async def get_config_value(self, key: str) -> Optional[str]:
         await self.connect()
+        pool = self._require_pool()
         query = "SELECT value FROM repost_config WHERE key = $1;"
-        async with self.pool.acquire() as conn:
+        async with pool.acquire() as conn:
             value = await conn.fetchval(query, key)
             return value

@@ -112,22 +112,6 @@ pytest tests/ --cov=src --cov-report=term
   mypy src
   ```
 
-## Docker
-Локальный запуск в контейнере (пример):
-```bash
-cat > Dockerfile <<'EOF'
-FROM python:3.11-slim
-WORKDIR /app
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-COPY . .
-CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "10000"]
-EOF
-
-docker build -t telegram-repost-bot .
-docker run -p 10000:10000 --env-file .env telegram-repost-bot
-```
-
 ## CI/CD
 - `.github/workflows/tests.yml` — запускает тесты на push/PR.
 - `.github/workflows/wake-up.yml` — два раза в день (07:00 и 19:00 UTC) дергает эндпоинты Render для пробуждения.

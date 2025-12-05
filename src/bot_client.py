@@ -19,7 +19,9 @@ class BotClient:
         self.logger = logger or structlog.get_logger(LOGGER_NAME)
         self.bot = bot or Bot(token=token)
 
-    async def copy_post(self, target_channel_id: int, source_channel: str, message_id: int) -> None:
+    async def copy_post(
+        self, target_channel_id: int, source_channel: str, message_id: int
+    ) -> None:
         try:
             await self.bot.copy_message(
                 chat_id=target_channel_id,
@@ -27,9 +29,15 @@ class BotClient:
                 message_id=message_id,
                 protect_content=False,
             )
-            self.logger.info("Post copied", message_id=message_id, target_channel_id=target_channel_id)
+            self.logger.info(
+                "Post copied",
+                message_id=message_id,
+                target_channel_id=target_channel_id,
+            )
         except TelegramError as exc:
-            self.logger.error("Failed to copy message", message_id=message_id, error=str(exc))
+            self.logger.error(
+                "Failed to copy message", message_id=message_id, error=str(exc)
+            )
             raise
 
     async def status(self) -> str:

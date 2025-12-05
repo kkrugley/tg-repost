@@ -35,11 +35,19 @@ class Scheduler:
         initialized_at = await self.database.get_config_value("initialized_at")
         post_count = await self.database.count_posts()
         if post_count > 0:
-            self.logger.info("Initialization skipped", posts=post_count, initialized_at=initialized_at)
+            self.logger.info(
+                "Initialization skipped",
+                posts=post_count,
+                initialized_at=initialized_at,
+            )
             return
 
-        saved = await self.user_client.fetch_posts(self.config.start_datetime, self.config.end_datetime)
-        await self.database.set_config_value("initialized_at", datetime.now(timezone.utc).isoformat())
+        saved = await self.user_client.fetch_posts(
+            self.config.start_datetime, self.config.end_datetime
+        )
+        await self.database.set_config_value(
+            "initialized_at", datetime.now(timezone.utc).isoformat()
+        )
         self.logger.info("Initial fetch complete", saved=saved)
 
     async def repost_once(self) -> Optional[dict]:
@@ -78,7 +86,9 @@ class Scheduler:
                 self.config.source_channel, ids=message_id
             )
             if not message:
-                self.logger.warning("Message missing in source channel", message_id=message_id)
+                self.logger.warning(
+                    "Message missing in source channel", message_id=message_id
+                )
                 await self.database.mark_reposted(message_id)
                 return
 

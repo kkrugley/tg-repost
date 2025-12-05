@@ -72,7 +72,14 @@ async def test_upsert_and_load_session():
 @pytest.mark.asyncio
 async def test_random_unreposted_post():
     conn = FakeConnection()
-    conn.fetchrow_returns.append({"id": 1, "message_id": 10, "channel_id": 20, "post_date": dt.datetime(2024, 1, 1)})
+    conn.fetchrow_returns.append(
+        {
+            "id": 1,
+            "message_id": 10,
+            "channel_id": 20,
+            "post_date": dt.datetime(2024, 1, 1),
+        }
+    )
     db = Database("postgresql://user:pass@localhost:5432/db", pool=FakePool(conn))
 
     post = await db.get_random_unreposted_post()

@@ -21,7 +21,9 @@ class StubDatabase:
     async def save_session_bytes(self, data: bytes):
         self.sessions.append(data)
 
-    async def upsert_post_metadata(self, message_id, channel_id, post_date, content_preview=None):
+    async def upsert_post_metadata(
+        self, message_id, channel_id, post_date, content_preview=None
+    ):
         self.metadata.append(
             {
                 "message_id": message_id,
@@ -93,7 +95,9 @@ async def test_fetch_posts_saves_metadata(fake_config):
     client = FakeTelethonClient(messages)
     user_client = UserClient(fake_config, db, client=client)
 
-    saved = await user_client.fetch_posts(fake_config.start_datetime, fake_config.end_datetime)
+    saved = await user_client.fetch_posts(
+        fake_config.start_datetime, fake_config.end_datetime
+    )
 
     assert saved == 2
     assert len(db.metadata) == 2
