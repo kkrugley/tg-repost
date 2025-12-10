@@ -5,7 +5,7 @@ from typing import Dict, List, Optional, Tuple
 
 import structlog
 from telegram import Bot
-from telegram.error import TelegramError
+from telegram.error import BadRequest, RetryAfter, TelegramError
 
 LOGGER_NAME = "repost.bot_client"
 
@@ -107,4 +107,16 @@ class BotClient:
             return "error"
 
     async def close(self) -> None:
-        await self.bot.close()
+        try:
+            await self.bot.close()
+        except RetryAfter as exc:
+            self.logger.warning(
+                "Bot API close throttled",
+                retry_after=getattr(exc, "retry_after", None),
+            )
+        except BadRequest as exc:
+            # Ignore if already closed
+            if "already been closed" in str(exc).lower():
+                self.logger.info("Bot API already closed")
+            else:
+                raise

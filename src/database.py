@@ -151,7 +151,9 @@ class Database:
                 terminate = getattr(self.pool, "terminate", None)
                 if callable(terminate):
                     try:
-                        await terminate()
+                        maybe = terminate()
+                        if inspect.isawaitable(maybe):
+                            await maybe
                     except Exception as exc:  # pragma: no cover - defensive
                         self.logger.error(
                             "Database pool terminate failed", error=str(exc)

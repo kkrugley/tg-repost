@@ -200,9 +200,8 @@ class UserClient:
                 channel = await self.client.get_entity(self.config.source_channel)
                 start_day = start_date.astimezone(self.config.timezone).date()
                 end_day = end_date.astimezone(self.config.timezone).date()
-                async for message in self.client.iter_messages(
-                    channel, offset_date=end_date, reverse=True
-                ):
+                # Iterate from newest to oldest; break when older than start_day.
+                async for message in self.client.iter_messages(channel):
                     if not message or not getattr(message, "date", None):
                         continue
                     message_date = message.date.astimezone(self.config.timezone)

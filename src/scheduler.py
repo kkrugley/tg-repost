@@ -85,9 +85,10 @@ class Scheduler:
 
     async def _copy_and_mark(self, post: dict) -> None:
         message_id = post["message_id"]
+        source_ref = post.get("channel_id") or self.config.source_channel
         if self.user_client.client:
             message = await self.user_client.client.get_messages(
-                self.config.source_channel, ids=message_id
+                source_ref, ids=message_id
             )
             if not message:
                 self.logger.warning(
@@ -98,7 +99,7 @@ class Scheduler:
         try:
             await self.bot_client.copy_post(
                 target_channel_id=self.config.target_channel_id,
-                source_channel=self.config.source_channel,
+                source_channel=source_ref,
                 message_id=message_id,
             )
         except TelegramError as exc:
