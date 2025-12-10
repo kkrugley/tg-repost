@@ -6,6 +6,7 @@ from datetime import datetime
 import ssl
 from typing import Any, Dict, Optional, cast
 from contextlib import asynccontextmanager
+from urllib.parse import urlparse
 
 import asyncpg
 from asyncpg.pool import Pool
@@ -30,18 +31,18 @@ CREATE_POSTS_INDEX = """
 CREATE INDEX IF NOT EXISTS idx_repost_posts_not_reposted ON repost_posts(is_reposted, post_date);
 """
 
-CREATE_SESSION_TABLE = """
-CREATE TABLE IF NOT EXISTS repost_session (
-    key VARCHAR(255) PRIMARY KEY,
-    value BYTEA NOT NULL,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-"""
-
 CREATE_CONFIG_TABLE = """
 CREATE TABLE IF NOT EXISTS repost_config (
     key VARCHAR(255) PRIMARY KEY,
     value TEXT NOT NULL,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+"""
+
+CREATE_SESSION_TABLE = """
+CREATE TABLE IF NOT EXISTS repost_session (
+    key VARCHAR(255) PRIMARY KEY,
+    value BYTEA NOT NULL,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 """
@@ -57,12 +58,28 @@ class Database:
         pool: Optional[Any] = None,
         max_retries: int = 3,
         retry_delay_seconds: int = 30,
+        use_ssl: bool = True,
+        connect_timeout: float = 10.0,
+        command_timeout: float = 60.0,
+        disable_statement_cache: bool = False,
     ):
         self.dsn = dsn
         self.pool = pool
         self.logger = logger or structlog.get_logger(LOGGER_NAME)
         self.max_retries = max_retries
         self.retry_delay_seconds = retry_delay_seconds
+        self.use_ssl = use_ssl
+        self.connect_timeout = connect_timeout
+        self.command_timeout = command_timeout
+        self.disable_statement_cache = disable_statement_cache
+
+    def _dsn_info(self) -> Dict[str, Any]:
+        parsed = urlparse(self.dsn)
+        return {
+            "host": parsed.hostname,
+            "port": parsed.port,
+            "database": parsed.path.lstrip("/") or None,
+        }
 
     def _require_pool(self) -> Pool:
         if self.pool is None:
@@ -72,15 +89,38 @@ class Database:
     async def connect(self) -> None:
         if self.pool is None:
             attempt = 0
+            dsn_info = self._dsn_info()
             while attempt < self.max_retries:
                 attempt += 1
-                ssl_ctx = ssl.create_default_context()
-                # For Supabase poolers we disable hostname check/cert verify to avoid DNS/SSL mismatches.
-                ssl_ctx.check_hostname = False
-                ssl_ctx.verify_mode = ssl.CERT_NONE
+                ssl_ctx = None
+                if self.use_ssl:
+                    ssl_ctx = ssl.create_default_context()
+                    # For Supabase poolers we disable hostname check/cert verify to avoid DNS/SSL mismatches.
+                    ssl_ctx.check_hostname = False
+                    ssl_ctx.verify_mode = ssl.CERT_NONE
                 try:
-                    self.pool = await asyncpg.create_pool(self.dsn, ssl=ssl_ctx)
-                    self.logger.info("Connected to database")
+                    self.logger.info(
+                        "Connecting to database",
+                        attempt=attempt,
+                        host=dsn_info.get("host"),
+                        port=dsn_info.get("port"),
+                        database=dsn_info.get("database"),
+                        ssl_enabled=bool(self.use_ssl),
+                        connect_timeout=self.connect_timeout,
+                        command_timeout=self.command_timeout,
+                    )
+                    self.pool = await asyncpg.create_pool(
+                        self.dsn,
+                        ssl=ssl_ctx,
+                        timeout=self.connect_timeout,
+                        command_timeout=self.command_timeout,
+                        statement_cache_size=0 if self.disable_statement_cache else 100,
+                        min_size=1,
+                        max_size=5,
+                    )
+                    self.logger.info(
+                        "Connected to database", ssl_enabled=bool(self.use_ssl)
+                    )
                     break
                 except Exception as exc:
                     self.logger.error(
@@ -88,6 +128,12 @@ class Database:
                         error=str(exc),
                         error_type=exc.__class__.__name__,
                         attempt=attempt,
+                        host=dsn_info.get("host"),
+                        port=dsn_info.get("port"),
+                        database=dsn_info.get("database"),
+                        ssl_enabled=bool(self.use_ssl),
+                        connect_timeout=self.connect_timeout,
+                        command_timeout=self.command_timeout,
                     )
                     if attempt >= self.max_retries:
                         raise
@@ -95,7 +141,21 @@ class Database:
 
     async def close(self) -> None:
         if self.pool is not None:
-            await self.pool.close()
+            try:
+                await asyncio.wait_for(self.pool.close(), timeout=10.0)
+            except asyncio.TimeoutError:
+                self.logger.warning(
+                    "Database pool close timed out, forcing terminate",
+                    timeout=10.0,
+                )
+                terminate = getattr(self.pool, "terminate", None)
+                if callable(terminate):
+                    try:
+                        await terminate()
+                    except Exception as exc:  # pragma: no cover - defensive
+                        self.logger.error(
+                            "Database pool terminate failed", error=str(exc)
+                        )
             self.pool = None
             self.logger.info("Database connection closed")
 

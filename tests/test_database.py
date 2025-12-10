@@ -57,16 +57,21 @@ async def test_setup_creates_tables():
 
 
 @pytest.mark.asyncio
-async def test_upsert_and_load_session():
+async def test_upsert_and_config_roundtrip():
     conn = FakeConnection()
-    conn.fetchval_returns.append(b"session-bytes")
     db = Database("postgresql://user:pass@localhost:5432/db", pool=FakePool(conn))
 
     await db.upsert_post_metadata(1, 2, dt.datetime(2024, 1, 1), "preview")
     assert conn.executed[-1][1][0] == 1
 
+    await db.set_config_value("last_update_id", "42")
+    conn.fetchval_returns.append("42")
+    cfg_value = await db.get_config_value("last_update_id")
+    assert cfg_value == "42"
+
+    conn.fetchval_returns.append(b"bytes")
     session = await db.load_session_bytes()
-    assert session == b"session-bytes"
+    assert session == b"bytes"
 
 
 @pytest.mark.asyncio

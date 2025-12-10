@@ -10,6 +10,7 @@ from contextlib import asynccontextmanager
 import structlog
 import uvicorn
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import JSONResponse, Response
 
 from .bot_client import BotClient
 from .config import Config, ConfigError, load_config
@@ -46,7 +47,7 @@ def configure_logging(level: str = "INFO") -> None:
 def create_app(
     config: Optional[Config] = None,
     database: Optional[Database] = None,
-    user_client: Optional[UserClient] = None,
+    user_client: Optional["UserClient"] = None,
     bot_client: Optional[BotClient] = None,
     scheduler: Optional[Scheduler] = None,
 ) -> FastAPI:
@@ -59,15 +60,19 @@ def create_app(
         logger=structlog.get_logger("repost.database"),
         max_retries=config.max_retries,
         retry_delay_seconds=config.retry_delay_seconds,
+        use_ssl=config.database_ssl,
+        connect_timeout=config.database_connect_timeout,
+        command_timeout=config.database_command_timeout,
+        disable_statement_cache=config.database_disable_statement_cache,
+    )
+    bot_client = bot_client or BotClient(
+        config.telegram_bot_token,
+        logger=structlog.get_logger("repost.bot_client"),
     )
     user_client = user_client or UserClient(
         config,
         database,
         logger=structlog.get_logger("repost.user_client"),
-    )
-    bot_client = bot_client or BotClient(
-        config.telegram_bot_token,
-        logger=structlog.get_logger("repost.bot_client"),
     )
     scheduler = scheduler or Scheduler(
         config,
@@ -80,6 +85,7 @@ def create_app(
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         try:
+            logger.info("App startup: scheduler initialize")
             await scheduler.initialize()
         except (
             Exception
@@ -87,12 +93,21 @@ def create_app(
             logger.error("Startup failed", error=str(exc))
             raise
         yield
+        logger.info("App shutdown: closing resources")
         await database.close()
         await bot_client.close()
         await user_client.stop()
 
     app = FastAPI(title="Telegram Repost Bot", version="0.1.0", lifespan=lifespan)
     repost_lock = asyncio.Lock()
+
+    @app.get("/", response_class=JSONResponse)
+    async def root() -> dict:
+        return {"status": "ok", "message": "see /health and /trigger_repost"}
+
+    @app.get("/favicon.ico")
+    async def favicon() -> Response:
+        return Response(status_code=204)
 
     @app.get("/health")
     async def health() -> dict:

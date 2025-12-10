@@ -21,6 +21,7 @@ class Config:
     telegram_api_hash: str
     telegram_phone: str
     telegram_auth_code: Optional[str]
+    telegram_session_string: Optional[str]
     telegram_bot_token: str
     target_channel_id: int
     source_channel: str
@@ -32,6 +33,10 @@ class Config:
     timezone: pytz.BaseTzInfo
     max_retries: int = 3
     retry_delay_seconds: int = 30
+    database_ssl: bool = True
+    database_connect_timeout: float = 10.0
+    database_command_timeout: float = 60.0
+    database_disable_statement_cache: bool = False
 
 
 def _require(name: str) -> str:
@@ -47,6 +52,14 @@ def _parse_int(name: str) -> int:
         return int(raw)
     except ValueError as exc:
         raise ConfigError(f"{name} must be an integer") from exc
+
+
+def _parse_float(name: str) -> float:
+    raw = _require(name)
+    try:
+        return float(raw)
+    except ValueError as exc:
+        raise ConfigError(f"{name} must be a number") from exc
 
 
 def _parse_date(name: str, tz: pytz.BaseTzInfo) -> datetime:
@@ -66,6 +79,18 @@ def _timezone(name: str = "TIMEZONE") -> pytz.BaseTzInfo:
         raise ConfigError(f"Invalid timezone: {raw}") from exc
 
 
+def _parse_bool(name: str, default: bool = True) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    normalized = raw.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise ConfigError(f"{name} must be a boolean (true/false)")
+
+
 def load_config() -> Config:
     load_dotenv()
     tz = _timezone()
@@ -80,6 +105,7 @@ def load_config() -> Config:
         telegram_api_hash=_require("TELEGRAM_API_HASH"),
         telegram_phone=_require("TELEGRAM_PHONE"),
         telegram_auth_code=os.getenv("TELEGRAM_AUTH_CODE"),
+        telegram_session_string=os.getenv("TELEGRAM_SESSION_STRING"),
         telegram_bot_token=_require("TELEGRAM_BOT_TOKEN"),
         target_channel_id=_parse_int("TARGET_CHANNEL_ID"),
         source_channel=_require("SOURCE_CHANNEL").lstrip("@"),
@@ -89,5 +115,19 @@ def load_config() -> Config:
         port=_parse_int("PORT"),
         log_level=os.getenv("LOG_LEVEL", "INFO").upper(),
         timezone=tz,
+        database_ssl=_parse_bool("DATABASE_SSL", default=True),
+        max_retries=_parse_int("MAX_RETRIES") if os.getenv("MAX_RETRIES") else 3,
+        retry_delay_seconds=_parse_int("RETRY_DELAY_SECONDS")
+        if os.getenv("RETRY_DELAY_SECONDS")
+        else 30,
+        database_connect_timeout=_parse_float("DATABASE_CONNECT_TIMEOUT")
+        if os.getenv("DATABASE_CONNECT_TIMEOUT")
+        else 10.0,
+        database_command_timeout=_parse_float("DATABASE_COMMAND_TIMEOUT")
+        if os.getenv("DATABASE_COMMAND_TIMEOUT")
+        else 60.0,
+        database_disable_statement_cache=_parse_bool(
+            "DATABASE_DISABLE_STATEMENT_CACHE", default=False
+        ),
     )
     return config

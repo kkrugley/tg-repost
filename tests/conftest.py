@@ -14,6 +14,7 @@ def fake_config() -> Config:
         telegram_api_hash="hash",
         telegram_phone="+7000000000",
         telegram_auth_code="12345",
+        telegram_session_string=None,
         telegram_bot_token="bot-token",
         target_channel_id=-100123,
         source_channel="source_channel",

@@ -6,7 +6,12 @@ from typing import Optional
 
 import structlog
 from telethon import TelegramClient
-from telethon.errors import SessionPasswordNeededError
+from telethon.errors import (
+    FloodWaitError,
+    PhoneCodeExpiredError,
+    PhoneCodeInvalidError,
+    SessionPasswordNeededError,
+)
 from telethon.sessions import StringSession
 
 from .config import Config
@@ -25,6 +30,14 @@ class DatabaseSession(StringSession):
         session_bytes = await database.load_session_bytes()
         session_string = session_bytes.decode() if session_bytes else None
         return cls(database, session_string)
+
+    @classmethod
+    async def from_env_or_db(
+        cls, database: Database, session_string: Optional[str] = None
+    ) -> "DatabaseSession":
+        if session_string:
+            return cls(database, session_string)
+        return await cls.from_db(database)
 
     async def save_to_db(self) -> None:
         session_string = super().save()
@@ -46,8 +59,18 @@ class UserClient:
         self.connected = False
 
     async def start(self) -> None:
+        self.logger.info("User client start")
         await self.database.connect()
-        session = await DatabaseSession.from_db(self.database)
+        session = await DatabaseSession.from_env_or_db(
+            self.database, self.config.telegram_session_string
+        )
+        if (
+            self.config.telegram_session_string
+            and not await self.database.load_session_bytes()
+        ):
+            await self.database.save_session_bytes(
+                self.config.telegram_session_string.encode()
+            )
 
         if self.client is None:
             self.client = TelegramClient(
@@ -61,26 +84,81 @@ class UserClient:
         while attempt < self.config.max_retries:
             attempt += 1
             try:
+                self.logger.info(
+                    "Connecting Telethon client",
+                    attempt=attempt,
+                    phone=self.config.telegram_phone,
+                )
                 await self.client.connect()
                 self.connected = True
-                if not await self.client.is_user_authorized():
-                    if not self.config.telegram_auth_code:
-                        raise RuntimeError(
-                            "TELEGRAM_AUTH_CODE is required for initial authorization"
-                        )
-                    await self.client.send_code_request(self.config.telegram_phone)
+                if await self.client.is_user_authorized():
+                    await session.save_to_db()
+                    self.logger.info("User client connected")
+                    return
+
+                code_hash = await self.database.get_config_value(
+                    "telethon_phone_code_hash"
+                )
+                if not code_hash:
                     try:
-                        await self.client.sign_in(
-                            self.config.telegram_phone, self.config.telegram_auth_code
+                        sent = await self.client.send_code_request(
+                            self.config.telegram_phone
                         )
-                    except SessionPasswordNeededError as exc:
+                        await self.database.set_config_value(
+                            "telethon_phone_code_hash", sent.phone_code_hash
+                        )
+                    except FloodWaitError as exc:
+                        await self.database.set_config_value(
+                            "telethon_phone_code_hash", ""
+                        )
                         raise RuntimeError(
-                            "Two-factor authentication is enabled; provide password support or disable 2FA"
+                            f"Telegram rate limit: wait {exc.seconds} seconds before "
+                            "requesting a new code"
                         ) from exc
-                await session.save_to_db()
-                self.logger.info("User client connected")
-                return
-            except Exception as exc:  # pragma: no cover - network/telegram errors
+
+                    raise RuntimeError(
+                        "Authorization code sent. Set TELEGRAM_AUTH_CODE from the latest "
+                        "SMS/Telegram message and restart."
+                    )
+
+                # Safety: if hash is empty but we got here, force re-request.
+                if code_hash == "":
+                    raise RuntimeError(
+                        "Authorization code sent. Set TELEGRAM_AUTH_CODE from the latest "
+                        "SMS/Telegram message and restart."
+                    )
+
+                if not self.config.telegram_auth_code:
+                    raise RuntimeError(
+                        "TELEGRAM_AUTH_CODE is required to complete authorization; set it "
+                        "to the latest code and restart."
+                    )
+
+                code = self.config.telegram_auth_code.strip()
+                try:
+                    await self.client.sign_in(
+                        self.config.telegram_phone,
+                        code=code,
+                        phone_code_hash=code_hash,
+                    )
+                    await self.database.set_config_value("telethon_phone_code_hash", "")
+                    await session.save_to_db()
+                    self.logger.info("User client connected")
+                    return
+                except (PhoneCodeInvalidError, PhoneCodeExpiredError) as exc:
+                    await self.database.set_config_value("telethon_phone_code_hash", "")
+                    raise RuntimeError(
+                        "TELEGRAM_AUTH_CODE is invalid or expired; request a new code, "
+                        "update env, and restart"
+                    ) from exc
+                except SessionPasswordNeededError as exc:
+                    raise RuntimeError(
+                        "Two-factor authentication is enabled; provide password support or disable 2FA"
+                    ) from exc
+            except RuntimeError:
+                # Do not retry auth flow in the same run to avoid code reuse/expiry.
+                raise
+            except Exception as exc:  # pragma: no cover
                 last_error = exc
                 self.logger.warning(
                     "User client connect failed", error=str(exc), attempt=attempt
@@ -148,7 +226,7 @@ class UserClient:
                 await self.persist_session()
                 self.logger.info("Messages fetched", count=saved)
                 return saved
-            except Exception as exc:  # pragma: no cover - network/telegram errors
+            except Exception as exc:  # pragma: no cover
                 self.logger.warning(
                     "Fetch posts failed", error=str(exc), attempt=attempt
                 )
@@ -166,5 +244,5 @@ class UserClient:
                 return "disconnected"
             authorized = await self.client.is_user_authorized()
             return "connected" if authorized else "unauthorized"
-        except Exception:  # pragma: no cover - telemetry/connection errors
+        except Exception:  # pragma: no cover
             return "error"

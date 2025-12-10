@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 import structlog
+from telegram.error import TelegramError
 
 from .bot_client import BotClient
 from .config import Config
@@ -30,6 +31,7 @@ class Scheduler:
         self.logger = logger or structlog.get_logger(LOGGER_NAME)
 
     async def initialize(self) -> None:
+        self.logger.info("Scheduler initialize start")
         await self.database.setup()
         await self.user_client.start()
         initialized_at = None
@@ -93,12 +95,24 @@ class Scheduler:
                 )
                 await self.database.mark_reposted(message_id)
                 return
-
-        await self.bot_client.copy_post(
-            target_channel_id=self.config.target_channel_id,
-            source_channel=self.config.source_channel,
-            message_id=message_id,
-        )
+        try:
+            await self.bot_client.copy_post(
+                target_channel_id=self.config.target_channel_id,
+                source_channel=self.config.source_channel,
+                message_id=message_id,
+            )
+        except TelegramError as exc:
+            error_text = str(exc).lower()
+            if (
+                "message to copy not found" in error_text
+                or "message to forward not found" in error_text
+            ):
+                self.logger.warning(
+                    "Message missing in source channel", message_id=message_id
+                )
+                await self.database.mark_reposted(message_id)
+                return
+            raise
         await self.database.mark_reposted(message_id)
 
     async def health(self) -> dict:

@@ -3,6 +3,7 @@
 ## 1. Общее описание проекта
 
 Телеграм-бот для автоматического репоста случайных публикаций из публичного канала-источника в целевой канал с отслеживанием уже опубликованных сообщений.
+Бот добавлен администратором в оба канала, поэтому читаем и копируем посты только через Bot API (User API/Telethon не используются).
 
 ## 2. Технический стек
 
@@ -10,15 +11,14 @@
 - **Язык программирования**: Python 3.11 (версия фиксируется в runtime.txt)
 - **Управление зависимостями**: requirements.txt с фиксированными версиями всех библиотек
 - **Основные библиотеки**:
-  - `telethon` — для работы с User API (чтение публичного канала)
-  - `python-telegram-bot` или `aiogram` — для работы с Bot API (публикация в целевой канал)
+  - `python-telegram-bot` или `aiogram` — для работы с Bot API (чтение исходного канала и публикация в целевой канал)
   - `psycopg2-binary` или `asyncpg` — для работы с PostgreSQL
   - `python-dotenv` — для управления переменными окружения
   - `pytz` — для работы с часовыми поясами
 
 ### 2.2 Инфраструктура
 - **Хостинг**: Render.com (Free Tier, Web Service)
-- **База данных**: Render.com PostgreSQL (Free Tier)
+- **База данных**: supabase.com PostgreSQL (Free Tier)
 - **CI/CD**: GitHub Actions для периодического пробуждения сервиса
 
 ## 3. Архитектура решения
@@ -34,9 +34,8 @@ telegram-repost-bot/
 │   ├── main.py                  # Точка входа
 │   ├── config.py                # Конфигурация и переменные окружения
 │   ├── database.py              # Работа с PostgreSQL
-│   ├── user_client.py           # Telethon User API
-│   ├── bot_client.py            # Bot API для репоста
-│   └── scheduler.py             # Логика выбора и репоста
+│   ├── bot_client.py            # Bot API для чтения/репоста
+│   └── scheduler.py             # Логика синхронизации, выбора и репоста
 ├── .env.example                 # Пример переменных окружения
 ├── .gitignore
 ├── requirements.txt             # Зависимости с фиксированными версиями
@@ -64,16 +63,7 @@ CREATE TABLE repost_posts (
 CREATE INDEX idx_repost_posts_not_reposted ON repost_posts(is_reposted, post_date);
 ```
 
-**Таблица 2: `repost_session`**
-```sql
-CREATE TABLE repost_session (
-    key VARCHAR(255) PRIMARY KEY,
-    value BYTEA NOT NULL,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-```
-
-**Таблица 3: `repost_config`**
+**Таблица 2: `repost_config`**
 ```sql
 CREATE TABLE repost_config (
     key VARCHAR(255) PRIMARY KEY,
@@ -85,20 +75,18 @@ CREATE TABLE repost_config (
 ## 4. Функциональные требования
 
 ### 4.1 Первый запуск (инициализация)
-1. Подключение к User API через Telethon
-2. Восстановление сессии из БД (если существует) или создание новой
-3. Получение всех сообщений из канала `@pulkrug` за период **30.10.2022 — 24.10.2024**
-4. Сохранение метаданных каждого сообщения в таблицу `repost_posts`
-5. Сохранение session-данных Telethon в таблицу `repost_session`
+1. Подключение к Bot API (бот добавлен администратором в оба канала)
+2. Получение непрочитанных `channel_post` обновлений из канала `@pulkrug` за период **30.10.2022 — 24.10.2024**
+3. Сохранение метаданных каждого сообщения в таблицу `repost_posts`
+4. Сохранение `last_update_id` в таблицу `repost_config` для продолжения синхронизации
 
 ### 4.2 Последующие запуски
-1. Восстановление Telethon-сессии из БД
+1. Подтягивание новых `channel_post` обновлений из исходного канала, начиная с сохраненного `last_update_id`, с фильтрацией по диапазону дат
 2. Проверка наличия непубликованных постов (`is_reposted = FALSE`)
 3. Если непубликованных постов нет — завершение работы с логированием
 4. Если есть — случайный выбор одного поста из доступных
-5. Получение полного содержимого поста из канала-источника
-6. Репост в целевой канал через Bot API
-7. Обновление записи в БД: установка `is_reposted = TRUE`, `reposted_at = NOW()`
+5. Репост в целевой канал через Bot API (`copyMessage`)
+6. Обновление записи в БД: установка `is_reposted = TRUE`, `reposted_at = NOW()`
 
 ### 4.3 HTTP-эндпоинт для пробуждения
 Бот должен поднимать минимальный веб-сервер (Flask/FastAPI) с эндпоинтом:
@@ -110,16 +98,9 @@ CREATE TABLE repost_config (
 Файл `.env` должен содержать:
 
 ```env
-# Telegram User API (для чтения канала)
-TELEGRAM_API_ID=your_api_id
-TELEGRAM_API_HASH=your_api_hash
-TELEGRAM_PHONE=+79991234567
-
-# Telegram Bot API (для публикации)
+# Telegram Bot API (бот — администратор каналов)
 TELEGRAM_BOT_TOKEN=your_bot_token
 TARGET_CHANNEL_ID=-1001234567890
-
-# Канал-источник
 SOURCE_CHANNEL=pulkrug
 
 # Диапазон дат
@@ -160,42 +141,21 @@ jobs:
 ```
 
 **Секреты GitHub**:
-- `RENDER_SERVICE_URL` — URL сервиса на Render (например, `https://your-bot.onrender.com`)
+- `RENDER_SERVICE_URL` — URL сервиса на Render (например, `https://tg-repost.onrender.com`)
 
-## 7. Логика работы с Telethon Session
+## 7. Логика работы с Bot API обновлениями
 
-### 7.1 Сохранение сессии в БД
-```python
-# Пример логики
-class DatabaseSession(MemorySession):
-    def __init__(self, db_connection):
-        super().__init__()
-        self.db = db_connection
-        self._load_from_db()
-    
-    def _load_from_db(self):
-        # Загрузка session из repost_session
-        pass
-    
-    def save(self):
-        # Сохранение session в repost_session
-        super().save()
-        self._save_to_db()
-```
-
-### 7.2 Обработка авторизации
-При первом запуске (если сессии нет):
-1. Запросить код подтверждения из Telegram
-2. **Важно**: На Render нет интерактивного ввода, поэтому код нужно передавать через переменную окружения `TELEGRAM_AUTH_CODE` или через API-эндпоинт
-
-**Рекомендуемое решение**: Авторизация должна быть выполнена локально перед деплоем, а session-данные загружены в БД вручную через миграцию или скрипт.
+- Используем Bot API `getUpdates`/`channel_post` события; бот обязательно должен быть администратором исходного канала, иначе история недоступна.
+- `last_update_id` хранится в `repost_config` и обновляется после каждой синхронизации, чтобы не читать одни и те же обновления повторно.
+- Фильтрация по дате выполняется на приложении: посты вне диапазона `START_DATE..END_DATE` игнорируются.
+- Сразу после синхронизации сохраняются только метаданные (`message_id`, `channel_id`, `post_date`, `content_preview`); для репоста используется `copyMessage` по `message_id`.
 
 ## 8. Обработка ошибок
 
 ### 8.1 Критические ошибки
 - Нет подключения к БД → логирование, завершение с кодом 1
-- Нет подключения к Telegram API → повтор через 60 секунд (до 3 попыток)
-- Истекла сессия Telethon → логирование, уведомление в отдельный канал для администратора
+- Нет подключения к Telegram Bot API → повтор через 60 секунд (до 3 попыток)
+- Бот потерял права администратора в канале-источнике → логирование, уведомление в отдельный канал для администратора
 
 ### 8.2 Некритические ошибки
 - Пост не найден в канале-источнике → пропуск, пометка в БД
@@ -229,7 +189,7 @@ class DatabaseSession(MemorySession):
 
 1. Создать PostgreSQL базу на Render
 2. Выполнить миграции (создание таблиц)
-3. **Локально**: авторизоваться через Telethon и сохранить session в БД
+3. Добавить бота администраторами в исходный и целевой каналы, убедиться, что бот получает `channel_post` обновления
 4. Создать Web Service на Render
 5. Настроить переменные окружения на Render
 6. Добавить секреты в GitHub
@@ -239,7 +199,7 @@ class DatabaseSession(MemorySession):
 ## 12. Критерии приемки
 
 - [ ] Бот успешно инициализируется и загружает все посты из канала за указанный период
-- [ ] Сессия Telethon сохраняется и восстанавливается из PostgreSQL
+- [ ] Bot API обновления синхронизируются с учетом `last_update_id`
 - [ ] Бот корректно выбирает случайный непубликованный пост
 - [ ] Репост выполняется с сохранением форматирования и медиа
 - [ ] После репоста пост помечается как опубликованный в БД
@@ -255,7 +215,6 @@ class DatabaseSession(MemorySession):
 - Минимальное покрытие кода тестами: **70%**
 - Обязательное покрытие критических модулей:
   - `database.py` — 80%+
-  - `user_client.py` — 70%+
   - `bot_client.py` — 70%+
   - `scheduler.py` — 80%+
 
@@ -268,7 +227,7 @@ class DatabaseSession(MemorySession):
 - Использовать `pytest` с фикстурами для mock-объектов
 
 **Интеграционные тесты**:
-- Тестирование записи/чтения session из PostgreSQL
+- Тестирование записи/чтения конфигов (`last_update_id`) в PostgreSQL
 - Тестирование веб-эндпоинтов `/health` и `/trigger_repost`
 - Использовать тестовую БД (SQLite in-memory или отдельный PostgreSQL для CI)
 
@@ -277,11 +236,11 @@ class DatabaseSession(MemorySession):
 tests/
 ├── __init__.py
 ├── conftest.py              # Общие фикстуры
-├── test_database.py
-├── test_user_client.py
+├── test_api_endpoints.py
 ├── test_bot_client.py
-├── test_scheduler.py
-└── test_api_endpoints.py
+├── test_config.py
+├── test_database.py
+└── test_scheduler.py
 ```
 
 ### 13.3 Continuous Integration
@@ -346,8 +305,7 @@ jobs:
 **Уровни логирования по модулям**:
 - `main.py` — INFO: запуск/остановка приложения
 - `database.py` — DEBUG: все SQL-запросы, INFO: подключение/отключение
-- `user_client.py` — INFO: подключение к Telegram, WARNING: проблемы с сессией
-- `bot_client.py` — INFO: успешные репосты, ERROR: ошибки публикации
+- `bot_client.py` — INFO: успешные репосты и синхронизация, ERROR: ошибки Bot API
 - `scheduler.py` — INFO: выбор поста, статистика доступных постов
 
 **Ротация и хранение логов на Render**:
@@ -365,7 +323,6 @@ Response:
   "status": "healthy",
   "timestamp": "2024-12-05T10:00:00Z",
   "database": "connected",
-  "telegram_user_api": "connected",
   "telegram_bot_api": "connected",
   "unpublished_posts": 487,
   "last_repost": "2024-12-05T09:30:00Z"
@@ -376,7 +333,7 @@ Response:
 - База данных недоступна более 5 минут
 - Ошибки Telegram API более 3 раз подряд
 - Не осталось непубликованных постов
-- Сессия Telethon истекла
+- Бот потерял доступ к исходному каналу
 
 ### 13.6 Документация тестов
 
@@ -434,7 +391,7 @@ mypy==1.7.1
 - [ ] `/trigger_repost` запускает репост и возвращает результат
 - [ ] GitHub Actions успешно пробуждает сервис
 - [ ] Логи содержат достаточно информации для диагностики
-- [ ] При истечении сессии Telethon логируется понятная ошибка
+- [ ] При потере прав бота или недоступности Bot API логируется понятная ошибка
 - [ ] При отсутствии непубликованных постов бот корректно завершается
 
 ---

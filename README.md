@@ -4,8 +4,7 @@
 
 ## Стек
 - Python 3.11 (фиксируется в `runtime.txt`, используйте поддерживаемую Render версию — `python-3.11.8`)
-- Telethon для User API
-- python-telegram-bot для Bot API
+- python-telegram-bot — бот-администратор читает исходный канал и копирует посты в целевой канал
 - asyncpg + Supabase (PostgreSQL)
 - FastAPI + uvicorn
 - pytest для тестов
@@ -23,8 +22,7 @@ telegram-repost-bot/
 │   ├── config.py
 │   ├── database.py
 │   ├── main.py
-│   ├── scheduler.py
-│   └── user_client.py
+│   └── scheduler.py
 ├── tests/
 │   ├── __init__.py
 │   ├── conftest.py
@@ -32,8 +30,7 @@ telegram-repost-bot/
 │   ├── test_bot_client.py
 │   ├── test_config.py
 │   ├── test_database.py
-│   ├── test_scheduler.py
-│   └── test_user_client.py
+│   └── test_scheduler.py
 ├── .env.example
 ├── .gitignore
 ├── requirements.txt
@@ -51,11 +48,10 @@ telegram-repost-bot/
    pip install -r requirements-dev.txt  # для разработки и тестов
    ```
 2. Скопируйте `.env.example` в `.env` и заполните переменные:
-   - Телеграм User API: `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`, `TELEGRAM_PHONE`, `TELEGRAM_AUTH_CODE`
-   - Телеграм Bot API: `TELEGRAM_BOT_TOKEN`, `TARGET_CHANNEL_ID`
-   - Канал-источник: `SOURCE_CHANNEL`
-   - Диапазон дат: `START_DATE=2022-10-30`, `END_DATE=2024-10-24`, `TIMEZONE=UTC`
-   - Supabase: `DATABASE_URL` (Connection string → URI), `SUPABASE_URL`, `SUPABASE_ANON_KEY` (или service key, если включен RLS)
+- Телеграм Bot API: `TELEGRAM_BOT_TOKEN`, `TARGET_CHANNEL_ID`
+- Канал-источник (username без `@` или `id`): `SOURCE_CHANNEL`
+- Диапазон дат, в пределах которых храним/репостим посты: `START_DATE=2022-10-30`, `END_DATE=2024-10-24`, `TIMEZONE=UTC`
+- Supabase: `DATABASE_URL` (Connection string → URI) **используйте Transaction pooler (IPv4)**, пример `postgresql://postgres.<project-id>:<pwd>@aws-0-<region>.pooler.supabase.com:6543/postgres?sslmode=require`; `DATABASE_SSL=true`; опционально `DATABASE_CONNECT_TIMEOUT`/`DATABASE_COMMAND_TIMEOUT`, `DATABASE_DISABLE_STATEMENT_CACHE=true` для pooler; `SUPABASE_URL`, `SUPABASE_ANON_KEY` (или service key, если включен RLS)
    - Веб-сервер: `PORT`, `LOG_LEVEL`
 
 ### Supabase вместо Render Postgres
@@ -65,16 +61,15 @@ telegram-repost-bot/
 
 ## Первый запуск и инициализация
 1. Убедитесь, что Supabase Postgres доступен и пустой (подключение по `DATABASE_URL` из Supabase).
-2. Выполните локально (до деплоя) для получения session Telethon и загрузки постов:
+2. Запустите сервис локально:
    ```bash
    python -m src.main
    ```
-   Приложение поднимет веб-сервер и при старте:
+   При старте приложение:
    - создаст таблицы `repost_*` в базе;
-   - авторизуется в Telethon, используя `TELEGRAM_AUTH_CODE` (предварительно получите код в Telegram);
-   - **если таблица постов пуста** — загрузит метаданные постов из канала за указанный период в `repost_posts`;
-   - сохранит session в таблицу `repost_session`.
-3. После первой синхронизации задеплойте сервис на Render и установите переменные окружения.
+   - подтянет непрочитанные `channel_post` обновления через Bot API (бот должен быть администратором исходного канала);
+   - сохранит метаданные подходящих постов (в пределах дат) в `repost_posts` и запомнит `last_update_id` в `repost_config`.
+3. После первичной синхронизации задеплойте сервис на Render и установите переменные окружения.
 
 ## Запуск сервера локально
 ```bash
@@ -89,7 +84,6 @@ uvicorn src.main:app --host 0.0.0.0 --port $PORT
   "status": "ok",
   "timestamp": "2024-01-01T00:00:00Z",
   "database": "connected",
-  "telegram_user_api": "connected",
   "telegram_bot_api": "connected",
   "unpublished_posts": 123,
   "last_repost": "2024-01-01T00:00:00"
@@ -122,5 +116,5 @@ pytest tests/ --cov=src --cov-report=term
 
 ## Дальнейшие шаги
 - Добавить оповещения о критических ошибках в личные сообщения указанному контактному лицу.
-- Расширить health-check дополнительными проверками (подключение к Telegram Bot/User API).
+- Расширить health-check дополнительными проверками (подключение к Telegram Bot API).
 - Настроить pre-commit с black/flake8/mypy.
