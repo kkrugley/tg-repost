@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Optional, Union
 
 import structlog
 from telegram.error import TelegramError
@@ -29,6 +29,26 @@ class Scheduler:
         self.user_client = user_client
         self.bot_client = bot_client
         self.logger = logger or structlog.get_logger(LOGGER_NAME)
+
+    @staticmethod
+    def _format_bot_channel_id(source: Union[int, str]) -> str:
+        if isinstance(source, int):
+            if source > 0 and not str(source).startswith("-100"):
+                return f"-100{source}"
+            return str(source)
+        return source if source.startswith("@") else f"@{source}"
+
+    def _resolve_sources(
+        self, source_ref: Union[int, str]
+    ) -> tuple[Union[int, str], str]:
+        parsed_ref: Union[int, str] = source_ref
+        if isinstance(source_ref, str) and source_ref.lstrip("-").isdigit():
+            try:
+                parsed_ref = int(source_ref)
+            except ValueError:
+                parsed_ref = source_ref
+        bot_formatted = self._format_bot_channel_id(parsed_ref)
+        return parsed_ref, bot_formatted
 
     async def initialize(self) -> None:
         self.logger.info("Scheduler initialize start")
@@ -85,10 +105,21 @@ class Scheduler:
 
     async def _copy_and_mark(self, post: dict) -> None:
         message_id = post["message_id"]
-        source_ref = post.get("channel_id") or self.config.source_channel
+        source_ref: Union[int, str] = (
+            post.get("channel_id") or self.config.source_channel
+        )
+        source_for_user, source_for_bot = self._resolve_sources(source_ref)
+
+        # Ensure Telethon knows the entity
+        user_lookup = source_for_user
         if self.user_client.client:
+            try:
+                await self.user_client.client.get_entity(user_lookup)
+            except Exception:
+                user_lookup = self.config.source_channel
+
             message = await self.user_client.client.get_messages(
-                source_ref, ids=message_id
+                user_lookup, ids=message_id
             )
             if not message:
                 self.logger.warning(
@@ -99,7 +130,7 @@ class Scheduler:
         try:
             await self.bot_client.copy_post(
                 target_channel_id=self.config.target_channel_id,
-                source_channel=source_ref,
+                source_channel=source_for_bot,
                 message_id=message_id,
             )
         except TelegramError as exc:

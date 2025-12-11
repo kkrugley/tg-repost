@@ -58,6 +58,30 @@ class UserClient:
         self.client = client
         self.connected = False
 
+    @staticmethod
+    def _normalize_channel_id(message: object, channel: object) -> int:
+        peer = getattr(message, "peer_id", None) or getattr(message, "to_id", None)
+        raw_id: int | str | None = 0
+        if peer:
+            raw_id = getattr(peer, "channel_id", None) or getattr(peer, "chat_id", None)
+        else:
+            raw_id = getattr(channel, "id", 0) or 0
+
+        if raw_id is None:
+            raw_id = 0
+
+        try:
+            channel_id = int(raw_id)
+        except (TypeError, ValueError):
+            return 0
+
+        # Preserve existing -100 prefix; add it for positive ids so Bot API can resolve.
+        if str(channel_id).startswith("-100"):
+            return channel_id
+        if channel_id > 0:
+            return int(f"-100{channel_id}")
+        return channel_id
+
     async def start(self) -> None:
         self.logger.info("User client start")
         await self.database.connect()
@@ -214,9 +238,10 @@ class UserClient:
                         continue
 
                     preview = (message.message or "")[:500]
+                    channel_id: int = self._normalize_channel_id(message, channel)
                     await self.database.upsert_post_metadata(
                         message_id=message.id,
-                        channel_id=getattr(channel, "id", 0),
+                        channel_id=channel_id,
                         post_date=naive_date,
                         content_preview=preview,
                     )
